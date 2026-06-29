@@ -204,9 +204,19 @@ func (fs *Filesystem) SpaceAvailableForDecompression(ctx context.Context, dir st
 			if err != nil {
 				return err
 			}
-			if !fs.unixFS.CanFit(size.Add(info.Size())) {
+			fileSize := info.Size()
+			if fileSize <= 0 {
+				return nil
+			}
+			current := size.Load()
+			if fileSize > math.MaxInt64-current {
 				return newFilesystemError(ErrCodeDiskSpace, nil)
 			}
+			next := current + fileSize
+			if !fs.unixFS.CanFit(next) {
+				return newFilesystemError(ErrCodeDiskSpace, nil)
+			}
+			size.Store(next)
 			return nil
 		}
 	})

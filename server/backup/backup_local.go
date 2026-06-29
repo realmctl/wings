@@ -35,6 +35,9 @@ func NewLocal(client remote.Client, uuid string, ignore string) *LocalBackup {
 // will obviously only work if the backup was created as a local backup.
 func LocateLocal(client remote.Client, uuid string) (*LocalBackup, os.FileInfo, error) {
 	b := NewLocal(client, uuid, "")
+	if err := b.validateIdentifier(); err != nil {
+		return nil, nil, err
+	}
 	st, err := os.Stat(b.Path())
 	if err != nil {
 		return nil, nil, err
