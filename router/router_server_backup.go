@@ -245,3 +245,126 @@ func deleteServerBackup(c *gin.Context) {
 	}
 	c.Status(http.StatusNoContent)
 }
+
+func parseBackupUuid(c *gin.Context, value string) (string, bool) {
+	parsed, err := uuid.Parse(value)
+	if err == nil && len(value) == len(parsed.String()) && parsed.String() == strings.ToLower(value) {
+		return parsed.String(), true
+	}
+	c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "The backup identifier must be a valid UUID."})
+	return "", false
+}
+
+func validateBackupDownloadUrl(raw string) error {
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.Host == "" {
+		return backupDownloadError("The provided backup link is not a valid URL.")
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return backupDownloadError("The provided backup link must use HTTP or HTTPS.")
+	}
+	if ip := net.ParseIP(parsed.Hostname()); ip != nil && isBlockedBackupRestoreIP(parsed.Hostname(), ip) {
+		return backupDownloadError("The provided backup link resolves to a blocked address.")
+	}
+	return nil
+}
+
+func backupRestoreHttpClient() http.Client {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.Proxy = nil
+	transport.ResponseHeaderTimeout = 30 * time.Second
+	dialer := &net.Dialer{
+		Timeout:   30 * time.Second,
+		KeepAlive: 30 * time.Second,
+	}
+	transport.DialContext = func(ctx context.Context, network string, address string) (net.Conn, error) {
+		host, port, err := net.SplitHostPort(address)
+		if err != nil {
+			return nil, err
+		}
+		ips, err := net.DefaultResolver.LookupIPAddr(ctx, host)
+		if err != nil {
+			return nil, err
+		}
+		if len(ips) == 0 {
+			return nil, errors.New("router/backups: backup download host did not resolve to any addresses")
+		}
+		for _, resolved := range ips {
+			if isBlockedBackupRestoreIP(host, resolved.IP) {
+				return nil, backupDownloadError("The provided backup link resolves to a blocked address.")
+			}
+		}
+		var lastErr error
+		for _, resolved := range ips {
+			conn, err := dialer.DialContext(ctx, network, net.JoinHostPort(resolved.IP.String(), port))
+			if err == nil {
+				return conn, nil
+			}
+			lastErr = err
+		}
+		return nil, lastErr
+	}
+	return http.Client{
+		Transport: transport,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if len(via) >= 10 {
+				return backupDownloadError("The provided backup link redirects too many times.")
+			}
+			return validateBackupDownloadUrl(req.URL.String())
+		},
+	}
+}
+
+func isBlockedBackupRestoreIP(host string, ip net.IP) bool {
+	addr, ok := netip.AddrFromSlice(ip)
+	if !ok {
+		return true
+	}
+	addr = addr.Unmap()
+	if !addr.IsGlobalUnicast() || addr.IsPrivate() || addr.IsLoopback() || addr.IsLinkLocalUnicast() || isExplicitlyBlockedBackupRestoreIP(addr) {
+		return !isAllowedBackupRestoreDestination(host, addr)
+	}
+	return false
+}
+
+func isExplicitlyBlockedBackupRestoreIP(addr netip.Addr) bool {
+	for _, prefix := range blockedBackupRestorePrefixes {
+		if prefix.Contains(addr) {
+			return true
+		}
+	}
+	return false
+}
+
+func isAllowedBackupRestoreDestination(host string, addr netip.Addr) bool {
+	host = strings.TrimSuffix(strings.ToLower(host), ".")
+	for _, entry := range config.Get().System.Backups.RestoreHostAllowlist {
+		entry = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(entry)), ".")
+		if entry == "" {
+			continue
+		}
+		if entry == host {
+			return true
+		}
+		if allowedAddr, err := netip.ParseAddr(entry); err == nil && allowedAddr.Unmap() == addr {
+			return true
+		}
+		if prefix, err := netip.ParsePrefix(entry); err == nil && prefix.Contains(addr) {
+			return true
+		}
+	}
+	return false
+}
+
+func isSupportedBackupRestoreContentType(value string) bool {
+	mediaType, _, err := mime.ParseMediaType(value)
+	if err != nil {
+		mediaType = strings.TrimSpace(value)
+	}
+	switch strings.ToLower(mediaType) {
+	case "application/x-gzip", "application/gzip":
+		return true
+	default:
+		return false
+	}
+}
