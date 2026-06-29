@@ -178,11 +178,21 @@ func postServerRestoreBackup(c *gin.Context) {
 	}
 	res, err := httpClient.Do(req)
 	if err != nil {
+		var downloadErr backupDownloadError
+		if stderrors.As(err, &downloadErr) {
+			c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": downloadErr.Error()})
+			return
+		}
 		middleware.CaptureAndAbort(c, err)
 		return
 	}
+	if res.StatusCode != http.StatusOK {
+		_ = res.Body.Close()
+		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "The provided backup link returned an invalid response status: " + res.Status})
+		return
+	}
 	// Don't allow content types that we know are going to give us problems.
-	if res.Header.Get("Content-Type") == "" || !strings.Contains("application/x-gzip application/gzip", res.Header.Get("Content-Type")) {
+	if !isSupportedBackupRestoreContentType(res.Header.Get("Content-Type")) {
 		_ = res.Body.Close()
 		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{
 			"error": "The provided backup link is not a supported content type. \"" + res.Header.Get("Content-Type") + "\" is not application/x-gzip.",
@@ -199,7 +209,7 @@ func postServerRestoreBackup(c *gin.Context) {
 		s.Events().Publish(server.BackupRestoreCompletedEvent, "")
 		logger.Info("completed server restoration from S3 backup")
 		s.SetRestoring(false)
-	}(s, c.Param("backup"), logger)
+	}(s, backupUuid, logger)
 
 	hasError = false
 	c.Status(http.StatusAccepted)
@@ -210,7 +220,11 @@ func postServerRestoreBackup(c *gin.Context) {
 // endpoint can make its own decisions as to how it wants to handle that
 // response.
 func deleteServerBackup(c *gin.Context) {
-	b, _, err := backup.LocateLocal(middleware.ExtractApiClient(c), c.Param("backup"))
+	backupUuid, ok := parseBackupUuid(c, c.Param("backup"))
+	if !ok {
+		return
+	}
+	b, _, err := backup.LocateLocal(middleware.ExtractApiClient(c), backupUuid)
 	if err != nil {
 		// Just return from the function at this point if the backup was not located.
 		if errors.Is(err, os.ErrNotExist) {
