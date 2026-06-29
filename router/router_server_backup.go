@@ -104,9 +104,19 @@ func postServerRestoreBackup(c *gin.Context) {
 	if err := c.BindJSON(&data); err != nil {
 		return
 	}
+	backupUuid, ok := parseBackupUuid(c, c.Param("backup"))
+	if !ok {
+		return
+	}
 	if data.Adapter == backup.S3BackupAdapter && data.DownloadUrl == "" {
 		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "The download_url field is required when the backup adapter is set to S3."})
 		return
+	}
+	if data.Adapter == backup.S3BackupAdapter {
+		if err := validateBackupDownloadUrl(data.DownloadUrl); err != nil {
+			c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
 	}
 
 	s.SetRestoring(true)
@@ -131,7 +141,7 @@ func postServerRestoreBackup(c *gin.Context) {
 	// Now that we've cleaned up the data directory if necessary, grab the backup file
 	// and attempt to restore it into the server directory.
 	if data.Adapter == backup.LocalBackupAdapter {
-		b, _, err := backup.LocateLocal(client, c.Param("backup"))
+		b, _, err := backup.LocateLocal(client, backupUuid)
 		if err != nil {
 			middleware.CaptureAndAbort(c, err)
 			return
