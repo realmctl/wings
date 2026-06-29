@@ -52,6 +52,9 @@ func LocateLocal(client remote.Client, uuid string) (*LocalBackup, os.FileInfo, 
 
 // Remove removes a backup from the system.
 func (b *LocalBackup) Remove() error {
+	if err := b.validateIdentifier(); err != nil {
+		return err
+	}
 	return os.Remove(b.Path())
 }
 
