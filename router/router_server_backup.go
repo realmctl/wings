@@ -1,18 +1,38 @@
 package router
 
 import (
+	"context"
+	stderrors "errors"
+	"mime"
+	"net"
 	"net/http"
+	"net/netip"
+	"net/url"
 	"os"
 	"strings"
+	"time"
 
 	"emperror.dev/errors"
 	"github.com/apex/log"
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 
+	"github.com/realmctl/wings/config"
 	"github.com/realmctl/wings/router/middleware"
 	"github.com/realmctl/wings/server"
 	"github.com/realmctl/wings/server/backup"
 )
+
+var blockedBackupRestorePrefixes = []netip.Prefix{
+	netip.MustParsePrefix("100.64.0.0/10"),
+	netip.MustParsePrefix("198.18.0.0/15"),
+}
+
+type backupDownloadError string
+
+func (e backupDownloadError) Error() string {
+	return string(e)
+}
 
 // postServerBackup performs a backup against a given server instance using the
 // provided backup adapter.
@@ -28,13 +48,17 @@ func postServerBackup(c *gin.Context) {
 	if err := c.BindJSON(&data); err != nil {
 		return
 	}
+	backupUuid, ok := parseBackupUuid(c, data.Uuid)
+	if !ok {
+		return
+	}
 
 	var adapter backup.BackupInterface
 	switch data.Adapter {
 	case backup.LocalBackupAdapter:
-		adapter = backup.NewLocal(client, data.Uuid, data.Ignore)
+		adapter = backup.NewLocal(client, backupUuid, data.Ignore)
 	case backup.S3BackupAdapter:
-		adapter = backup.NewS3(client, data.Uuid, data.Ignore)
+		adapter = backup.NewS3(client, backupUuid, data.Ignore)
 	default:
 		middleware.CaptureAndAbort(c, errors.New("router/backups: provided adapter is not valid: "+string(data.Adapter)))
 		return
