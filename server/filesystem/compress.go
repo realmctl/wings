@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	iofs "io/fs"
+	"math"
 	"path"
 	"path/filepath"
 	"slices"
@@ -44,7 +45,7 @@ func (fs *Filesystem) CompressFiles(dir string, paths []string) (ufs.FileInfo, e
 	if err := a.Stream(context.Background(), cw); err != nil {
 		return nil, err
 	}
-	if !fs.unixFS.CanFit(cw.BytesWritten()) {
+	if cw.BytesWritten() < 0 || !fs.unixFS.CanFit(cw.BytesWritten()) {
 		_ = fs.unixFS.Remove(d)
 		return nil, newFilesystemError(ErrCodeDiskSpace, nil)
 	}
