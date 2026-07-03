@@ -59,6 +59,8 @@ func postServerBackup(c *gin.Context) {
 		adapter = backup.NewLocal(client, backupUuid, data.Ignore)
 	case backup.S3BackupAdapter:
 		adapter = backup.NewS3(client, backupUuid, data.Ignore)
+	case backup.RusticBackupAdapter:
+		adapter = backup.NewRustic(client, backupUuid, data.Ignore)
 	default:
 		middleware.CaptureAndAbort(c, errors.New("router/backups: provided adapter is not valid: "+string(data.Adapter)))
 		return
@@ -95,7 +97,7 @@ func postServerRestoreBackup(c *gin.Context) {
 	logger := middleware.ExtractLogger(c)
 
 	var data struct {
-		Adapter           backup.AdapterType `binding:"required,oneof=wings s3" json:"adapter"`
+		Adapter           backup.AdapterType `binding:"required,oneof=wings s3 rustic" json:"adapter"`
 		TruncateDirectory bool               `json:"truncate_directory"`
 		// A UUID is always required for this endpoint, however the download URL
 		// is only present when the given adapter type is s3.
@@ -154,6 +156,25 @@ func postServerRestoreBackup(c *gin.Context) {
 			s.Events().Publish(server.DaemonMessageEvent, "Completed server restoration from local backup.")
 			s.Events().Publish(server.BackupRestoreCompletedEvent, "")
 			logger.Info("completed server restoration from local backup")
+			s.SetRestoring(false)
+		}(s, b, logger)
+		hasError = false
+		c.Status(http.StatusAccepted)
+		return
+	}
+
+	// Rustic restores read directly from the node's repository, so like local
+	// backups no download URL or streamed reader is required.
+	if data.Adapter == backup.RusticBackupAdapter {
+		b := backup.NewRustic(client, backupUuid, "")
+		go func(s *server.Server, b backup.BackupInterface, logger *log.Entry) {
+			logger.Info("starting restoration process for server backup using rustic driver")
+			if err := s.RestoreBackup(b, nil); err != nil {
+				logger.WithField("error", err).Error("failed to restore rustic backup to server")
+			}
+			s.Events().Publish(server.DaemonMessageEvent, "Completed server restoration from rustic backup.")
+			s.Events().Publish(server.BackupRestoreCompletedEvent, "")
+			logger.Info("completed server restoration from rustic backup")
 			s.SetRestoring(false)
 		}(s, b, logger)
 		hasError = false
@@ -224,6 +245,19 @@ func deleteServerBackup(c *gin.Context) {
 	if !ok {
 		return
 	}
+
+	// Rustic backups live in a repository rather than as a standalone file, so
+	// forget the snapshot directly instead of locating a local archive.
+	if backup.AdapterType(c.Query("adapter")) == backup.RusticBackupAdapter {
+		b := backup.NewRustic(middleware.ExtractApiClient(c), backupUuid, "")
+		if err := b.Remove(); err != nil {
+			middleware.CaptureAndAbort(c, err)
+			return
+		}
+		c.Status(http.StatusNoContent)
+		return
+	}
+
 	b, _, err := backup.LocateLocal(middleware.ExtractApiClient(c), backupUuid)
 	if err != nil {
 		// Just return from the function at this point if the backup was not located.

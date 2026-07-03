@@ -298,6 +298,56 @@ type Backups struct {
 	// RestoreHostAllowlist allows backup restore downloads to connect to otherwise blocked
 	// private/internal destinations. Entries may be hostnames, IP addresses, or CIDR ranges.
 	RestoreHostAllowlist []string `yaml:"restore_host_allowlist"`
+
+	// Rustic configures the deduplicated, encrypted backup adapter backed by the
+	// rustic (https://rustic.cli.rs) binary. When enabled, servers may create
+	// backups into a single repository shared by all servers on this node, giving
+	// block-level deduplication and encryption at rest.
+	Rustic Rustic `yaml:"rustic"`
+}
+
+// Rustic holds the node-level configuration for the rustic backup adapter. The
+// repository is owned and only ever accessed by Wings itself; game server
+// containers never receive credentials for or a path to the repository.
+type Rustic struct {
+	// Enabled toggles whether this node will accept backups using the "rustic"
+	// adapter. When false, requests for the rustic adapter are rejected.
+	Enabled bool `default:"false" yaml:"enabled"`
+
+	// BinaryPath is the path to (or name resolvable on PATH of) the rustic
+	// executable used to drive the repository.
+	BinaryPath string `default:"rustic" yaml:"binary_path"`
+
+	// Repository is the rustic repository location. This may be a local
+	// filesystem path or any location rustic understands (e.g. rclone/S3 URLs).
+	// If left empty a "rustic" directory inside the backup directory is used.
+	Repository string `yaml:"repository"`
+
+	// Password is used to encrypt the repository. Either this or PasswordFile is
+	// required when the adapter is enabled.
+	Password string `yaml:"password"`
+
+	// PasswordFile optionally reads the repository password from a file instead
+	// of embedding it directly in the configuration.
+	PasswordFile string `yaml:"password_file"`
+
+	// Compression sets the zstd compression level passed to rustic (for example
+	// "max", or a number from "1" to "22"). Empty uses rustic's default.
+	Compression string `default:"" yaml:"compression"`
+
+	// Prune runs `rustic prune` after a backup is removed to reclaim unreferenced
+	// data. This reclaims disk space at the cost of a slower delete operation.
+	Prune bool `default:"true" yaml:"prune"`
+}
+
+// RusticRepository returns the effective repository location for the rustic
+// adapter, falling back to a directory inside the backup directory when one is
+// not explicitly configured.
+func (b Backups) RusticRepository(backupDirectory string) string {
+	if b.Rustic.Repository != "" {
+		return b.Rustic.Repository
+	}
+	return filepath.Join(backupDirectory, "rustic")
 }
 
 type Transfers struct {
