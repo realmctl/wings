@@ -5,11 +5,18 @@ ARG VERSION
 # RUSTIC_VERSION and RUSTIC_TARGET control the rustic binary bundled for the
 # deduplicated/encrypted backup adapter. Override RUSTIC_TARGET for non-amd64
 # nodes (e.g. aarch64-unknown-linux-musl).
-ARG RUSTIC_VERSION=0.9.5
+ARG RUSTIC_VERSION=0.11.3
 ARG RUSTIC_TARGET=x86_64-unknown-linux-musl
 RUN apk add --update --no-cache git make mailcap curl tar
-RUN curl -fsSL "https://github.com/rustic-rs/rustic/releases/download/v${RUSTIC_VERSION}/rustic-v${RUSTIC_VERSION}-${RUSTIC_TARGET}.tar.gz" \
-    | tar -xz -C /usr/local/bin rustic && chmod +x /usr/local/bin/rustic
+# Extract into a scratch dir then move the binary out — the archive layout
+# (binary at root vs. nested in a versioned dir) varies between releases.
+RUN mkdir -p /tmp/rustic \
+    && curl -fsSL "https://github.com/rustic-rs/rustic/releases/download/v${RUSTIC_VERSION}/rustic-v${RUSTIC_VERSION}-${RUSTIC_TARGET}.tar.gz" \
+       | tar -xz -C /tmp/rustic \
+    && mv "$(find /tmp/rustic -type f -name rustic | head -n1)" /usr/local/bin/rustic \
+    && chmod +x /usr/local/bin/rustic \
+    && rm -rf /tmp/rustic \
+    && /usr/local/bin/rustic --version
 WORKDIR /app/
 COPY go.mod go.sum /app/
 RUN go mod download

@@ -187,7 +187,7 @@ func (b *RusticBackup) Generate(ctx context.Context, fsys *filesystem.Filesystem
 // latestSnapshot queries the repository for the most recent snapshot carrying
 // this backup's tag.
 func (b *RusticBackup) latestSnapshot(ctx context.Context) (*rusticSnapshot, error) {
-	out, err := b.run(ctx, "snapshots", "--tag", b.Uuid, "--json")
+	out, err := b.run(ctx, "snapshots", "--filter-tags-exact", b.Uuid, "--json")
 	if err != nil {
 		return nil, err
 	}
@@ -238,7 +238,9 @@ func (b *RusticBackup) Remove() error {
 	lock.Lock()
 	defer lock.Unlock()
 
-	if _, err := b.run(ctx, "forget", "--tag", b.Uuid); err != nil {
+	// --keep-none is required by rustic when forgetting via a filter with no
+	// retention policy; it allows every snapshot matching the tag to be removed.
+	if _, err := b.run(ctx, "forget", "--filter-tags-exact", b.Uuid, "--keep-none"); err != nil {
 		return err
 	}
 	if config.Get().System.Backups.Rustic.Prune {
@@ -370,28 +372,22 @@ func parseSnapshots(out []byte) ([]rusticSnapshot, error) {
 	if len(trimmed) == 0 {
 		return nil, nil
 	}
-	// `rustic snapshots --json` emits an array of groups, each being a
-	// [group_key, [snapshots...]] pair. Try that shape first, then fall back to a
-	// flat array of snapshots.
-	var groups []json.RawMessage
-	if err := json.Unmarshal(trimmed, &groups); err != nil {
-		return nil, errors.WrapIf(err, "backup: failed to parse rustic snapshots output")
-	}
+	// A flat array of snapshot objects (older/ungrouped output).
 	var flat []rusticSnapshot
 	if err := json.Unmarshal(trimmed, &flat); err == nil && len(flat) > 0 && flat[0].Id != "" {
 		return flat, nil
 	}
+	// `rustic snapshots --json` emits an array of group objects, each shaped
+	// { "group_key": {...}, "snapshots": [ {snapshot}, ... ] }.
+	var groups []struct {
+		Snapshots []rusticSnapshot `json:"snapshots"`
+	}
+	if err := json.Unmarshal(trimmed, &groups); err != nil {
+		return nil, errors.WrapIf(err, "backup: failed to parse rustic snapshots output")
+	}
 	var result []rusticSnapshot
 	for _, g := range groups {
-		var pair []json.RawMessage
-		if err := json.Unmarshal(g, &pair); err != nil || len(pair) < 2 {
-			continue
-		}
-		var snaps []rusticSnapshot
-		if err := json.Unmarshal(pair[len(pair)-1], &snaps); err != nil {
-			continue
-		}
-		result = append(result, snaps...)
+		result = append(result, g.Snapshots...)
 	}
 	return result, nil
 }
